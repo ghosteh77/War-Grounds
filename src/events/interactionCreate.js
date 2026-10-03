@@ -2136,6 +2136,262 @@ GENERAL SUPPORT
     }
     /*
     ============================================================
+    STAFF APPLICATION ACCEPT / DECLINE
+    ============================================================
+    */
+
+    if (
+        interaction.customId.startsWith('application_accept_') ||
+        interaction.customId.startsWith('application_decline_')
+    ) {
+
+        try {
+
+            await interaction.deferReply({
+                ephemeral: true
+            });
+
+            const isStaff = STAFF_ROLE_IDS.some(
+                roleId =>
+                    interaction.member.roles.cache.has(roleId)
+            );
+
+            if (!isStaff) {
+                return interaction.editReply({
+                    content:
+                        '❌ You do not have permission to review Staff Applications.'
+                });
+            }
+
+            const parts = interaction.customId.split('_');
+            const action = parts[1];
+            const applicationId = parts[2];
+
+            const application =
+                await Application.findById(applicationId);
+
+            if (!application) {
+                return interaction.editReply({
+                    content:
+                        '❌ This Staff Application could not be found.'
+                });
+            }
+
+            if (application.status !== 'pending') {
+                return interaction.editReply({
+                    content:
+                        '❌ This Staff Application has already been reviewed.'
+                });
+            }
+
+            const applicant =
+                await interaction.client.users.fetch(
+                    application.userId
+                );
+
+            if (action === 'decline') {
+
+                application.status = 'declined';
+                application.reviewedAt = new Date();
+                application.reviewedBy = interaction.user.id;
+
+                await application.save();
+
+                try {
+                    await applicant.send(
+                        '❌ **Staff Application Declined**\n\n' +
+                        'Your Staff Application for **War Grounds** has been declined by the staff team.'
+                    );
+                } catch (dmError) {
+                    console.log(
+                        '⚠️ Could not DM the Staff applicant.'
+                    );
+                }
+
+                await interaction.message.edit({
+                    components: [
+                        new ActionRowBuilder().addComponents(
+                            new ButtonBuilder()
+                                .setCustomId(
+                                    'staff_application_declined'
+                                )
+                                .setLabel('Declined')
+                                .setStyle(ButtonStyle.Danger)
+                                .setDisabled(true)
+                        )
+                    ]
+                });
+
+                return interaction.editReply({
+                    content:
+                        '✅ Staff Application declined.'
+                });
+            }
+
+            if (action === 'accept') {
+
+                const guild = interaction.guild;
+
+                if (!guild) {
+                    return interaction.editReply({
+                        content:
+                            '❌ This action can only be used inside the War Grounds server.'
+                    });
+                }
+
+                application.status = 'accepted';
+                application.reviewedAt = new Date();
+                application.reviewedBy = interaction.user.id;
+
+                await application.save();
+
+                const permissionOverwrites = [
+                    {
+                        id: guild.id,
+                        deny: [
+                            PermissionFlagsBits.ViewChannel
+                        ]
+                    },
+                    {
+                        id: interaction.client.user.id,
+                        allow: [
+                            PermissionFlagsBits.ViewChannel,
+                            PermissionFlagsBits.SendMessages,
+                            PermissionFlagsBits.ReadMessageHistory,
+                            PermissionFlagsBits.ManageChannels
+                        ]
+                    },
+                    {
+                        id: application.userId,
+                        allow: [
+                            PermissionFlagsBits.ViewChannel,
+                            PermissionFlagsBits.SendMessages,
+                            PermissionFlagsBits.ReadMessageHistory
+                        ]
+                    }
+                ];
+
+                for (const roleId of STAFF_ROLE_IDS) {
+                    permissionOverwrites.push({
+                        id: roleId,
+                        allow: [
+                            PermissionFlagsBits.ViewChannel,
+                            PermissionFlagsBits.SendMessages,
+                            PermissionFlagsBits.ReadMessageHistory
+                        ]
+                    });
+                }
+
+                const ticket =
+                    await guild.channels.create({
+                        name:
+                            `staff-application-${application._id.toString().slice(-6)}`,
+                        type:
+                            ChannelType.GuildText,
+                        parent:
+                            TICKET_CATEGORY_ID,
+                        permissionOverwrites
+                    });
+
+                await ticket.send({
+                    content:
+                        `${STAFF_ROLE_IDS
+                            .map(roleId => `<@&${roleId}>`)
+                            .join(' ')}\n` +
+                        `<@${application.userId}>`,
+
+                    embeds: [
+                        new EmbedBuilder()
+                            .setTitle('📋 Staff Application')
+                            .setDescription(
+                                'This private ticket has been created for the accepted Staff Application.'
+                            )
+                            .setColor(0x57F287)
+                            .addFields({
+                                name: '👤 Applicant',
+                                value:
+                                    `<@${application.userId}>`
+                            })
+                            .setTimestamp()
+                    ],
+
+                    components: [
+                        new ActionRowBuilder().addComponents(
+                            new ButtonBuilder()
+                                .setCustomId(
+                                    'close_staff_ticket'
+                                )
+                                .setLabel('Close Ticket')
+                                .setEmoji('🔒')
+                                .setStyle(
+                                    ButtonStyle.Danger
+                                )
+                        )
+                    ]
+                });
+
+                try {
+                    await applicant.send(
+                        '✅ **Staff Application Accepted!**\n\n' +
+                        'Your Staff Application has been accepted.\n\n' +
+                        `A private ticket has been created in the War Grounds server: ${ticket}`
+                    );
+                } catch (dmError) {
+                    console.log(
+                        '⚠️ Could not DM the Staff applicant.'
+                    );
+                }
+
+                await interaction.message.edit({
+                    components: [
+                        new ActionRowBuilder().addComponents(
+                            new ButtonBuilder()
+                                .setCustomId(
+                                    'staff_application_accepted'
+                                )
+                                .setLabel('Accepted')
+                                .setStyle(
+                                    ButtonStyle.Success
+                                )
+                                .setDisabled(true)
+                        )
+                    ]
+                });
+
+                return interaction.editReply({
+                    content:
+                        `✅ Staff Application accepted and ticket created: ${ticket}`
+                });
+            }
+
+            return interaction.editReply({
+                content:
+                    '❌ Invalid Staff Application action.'
+            });
+
+        } catch (error) {
+
+            console.error(
+                '❌ Staff application review error:',
+                error
+            );
+
+            if (
+                interaction.deferred &&
+                !interaction.replied
+            ) {
+                return interaction.editReply({
+                    content:
+                        '❌ Something went wrong while reviewing the Staff Application.'
+                });
+            }
+        }
+
+        return;
+    }
+
+    /*
+    ============================================================
     CONTENT CREATOR APPLICATION ACCEPT / DECLINE
     ============================================================
     */
